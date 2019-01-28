@@ -1884,3 +1884,380 @@ By default, the createIndex is using the foreground way to build the index, to u
 ```js
 db.users.createIndex({ name: 1 }, { background: true });
 ```
+
+## 8. Aggregation framework
+
+Aggregation framework is just like the `find` method, it give you some steps to get the data you needed.
+
+Aggregation framework works as follow:
+
+collection -> {$match} -> {$sort} -> {$group} -> {$project} -> output (a list of documents)
+
+All aggregation framework about is transform the data you need through a pipline of steps.
+
+Let's use our contactData database.
+
+### 8.1 Getting start
+
+To start a aggregation, instead of `.find`, we use `.aggregate([])` and inside the array, there are some steps, each step tells the mongodb how to transform the data. Also, aggregation framework can also take advantage from things like indexes.
+
+```js
+db.contacts.aggregate([{ $match: { gender: "female" } }]);
+```
+
+This will return exactly like
+
+```js
+db.contacts.find({ gender: "female" });
+```
+
+### 8.2 Group
+
+```js
+db.contacts.aggregate([
+  { $match: { gender: "female" } },
+  {
+    $group: {
+      _id: { livingState: "$location.state" },
+      totalPersonCount: { $sum: 1 }
+    }
+  }
+]);
+```
+This will return you something like this:
+```js
+{ "_id" : { "livingState" : "tayside" }, "totalPersonCount" : 1 }
+{ "_id" : { "livingState" : "berkshire" }, "totalPersonCount" : 1 }
+{ "_id" : { "livingState" : "michigan" }, "totalPersonCount" : 1 }
+{ "_id" : { "livingState" : "county down" }, "totalPersonCount" : 1 }
+{ "_id" : { "livingState" : "cornwall" }, "totalPersonCount" : 2 }
+```
+What does it do?
+It groups our data by state, and count the number of people with that state.
+
+Each group need to have an _id, here, in group, it should be a document. The $location.state means to get the value of location.state. the $sum is a special operator which will add the value of the $sum each time we found a record.
+
+We can also sort the data after grouping by totalPersonCount
+```js
+db.contacts.aggregate([
+  { $match: { gender: "male" } },
+  {
+    $group: {
+      _id: { livingState: "$location.state" },
+      totalPersonCount: { $sum: 1 }
+    }
+  },
+  {$sort: { totalPersonCount: -1}}
+]);
+```
+The data is sorted after the group step, which is something that simple query can never do.
+
+Let's do another aggregation for practise, this time, let's find all the persons who is older than 50 years old, and group them by gender to display the number of people and the average age for each gender, and then group them by the total number per gender.
+
+```js
+db.contacts.aggregate([
+  { $match: { "dob.age": {$gt: 50 }}},
+  { 
+    $group: {
+      _id: { gen: "$gender" },
+      totalNumber: {$sum: 1},
+      averageAge: { $avg: "$dob.age"}
+    }
+  },
+  { $sort: {totalNumber: -1}}
+])
+```
+
+### 8.3 Project
+Projection in the aggregation framework is much more powerful than it in the normal query.
+
+Let's say we want to get a new field "fullName" which is the first name concatenate the last name, how can we do that?
+
+```js
+db.contacts.aggregate([
+  {$project: {
+    _id: 0, gender: 1,
+    fullName: {$concat: ["$name.first", " ", "$name.last"]}
+  }}
+])
+```
+Let's make it more difficult, say we want the name to be title case, for example, "Jasen Pan".
+
+```js
+db.contacts.aggregate([
+  {$project: {
+    _id: 0, gender: 1,
+    fullName: {
+      $concat: [
+        {$toUpper: { $substrCP: ["$name.first", 0, 1]}},
+        {
+  $substrCP: ["$name.first", 1, { $subtract: [{ $strLenCP: "$name.first" }, 1] }]
+},
+        " ",
+        {$toUpper: { $substrCP: ["$name.last", 0, 1]}},
+        {
+  $substrCP: ["$name.last", 1, { $subtract: [{ $strLenCP: "$name.last" }, 1] }]
+}
+      ]
+    } 
+  }}
+])
+```
+<!-- That's better, but some of the first names or last names has more than one word, we also need to address that
+
+```js
+db.contacts.aggregate([
+  {$project: {
+    _id: 0, gender: 1,
+    fullName: {
+      $concat: [
+        {$toUpper: { $substrCP: ["$name.first", 0, 1]}},
+        {
+  $substrCP: ["$name.first", 1, { $subtract: [{ $strLenCP: "$name.first" }, 1] }]
+},
+        " ",
+        {$toUpper: { $substrCP: ["$name.last", 0, 1]}},
+        {
+  $substrCP: ["$name.last", 1, { $subtract: [{ $strLenCP: "$name.last" }, 1] }]
+}
+      ]
+    } 
+  }}
+])
+``` -->
+
+Note here, each step in a pipeline can be repeated, for example, you can have something like 
+```js
+db.contacts.aggregate([
+  {$project: {...}},
+  {$group: {...}},
+  {$project: {...}},
+  {$group: {...}},
+  {$sort: {...}}
+])
+```
+This is totally fine, just remember, the output from the last step will be the input for next step in the pipeline.
+
+Let's do a practise, now, beside the fullName and the gender, we also want the email, and another field called location, which should be a geoJson array, look like this:
+```js
+location: {
+  type: "Point",
+  coordinates: [
+    <longitude>, // has to be a number
+    <latitude>  // has to be a number
+  ]
+}
+```
+
+```js
+db.contacts.aggregate([
+  {
+    $project: {
+      _id: 0,
+      gender: 1,
+      email: 1,
+      name: 1,
+      location: {
+        type: "Point",
+        coordinates: [
+          {
+            $convert: {
+              input: "$location.coordinates.longitude",
+              to: "double",
+              onError: 0.0,
+              onNull: 0.0
+            }
+          },
+          {
+            $convert: {
+              input: "$location.coordinates.latitude",
+              to: "double",
+              onError: 0.0,
+              onNull: 0.0
+            }
+          }
+        ]
+      }
+    }
+  },
+  {
+    $project: {
+      gender: 1,
+      email: 1,
+      fullName: {
+        $concat: [
+          { $toUpper: { $substrCP: ["$name.first", 0, 1] } },
+          {
+            $substrCP: [
+              "$name.first",
+              1,
+              { $subtract: [{ $strLenCP: "$name.first" }, 1] }
+            ]
+          },
+          " ",
+          { $toUpper: { $substrCP: ["$name.last", 0, 1] } },
+          {
+            $substrCP: [
+              "$name.last",
+              1,
+              { $subtract: [{ $strLenCP: "$name.last" }, 1] }
+            ]
+          }
+        ]
+      },
+      location: 1
+    }
+  }
+]);
+```
+Now, let's also try to convert the birthday to the top level field as well as the age.
+
+```js
+{
+    $project: {
+      _id: 0,
+      gender: 1,
+      email: 1,
+      name: 1,
+      birthdate: {
+        $dateFromString: {
+          dateString: "$dob.date"
+        }
+      },
+      age: "$dob.age",
+      location: {
+        ...
+      }
+      ...
+```
+
+Also, if we don't need to specify the onError and onNull on the convert step, there are few short cut operator for us such as `$toDate` or `$toDouble`, now we can say `birthday: { $toDate: "$dob.date"}`, it will give us the same result.
+
+Let's do another level of transformation, let's group the documents by the birthday year, and count how many people born on each year:
+```js
+db.contacts.aggregate([
+  {
+    // projection level
+  },
+  { $group: { _id: { birthYear: { $isoWeekYear: "$birthdate" } }, numPersons: { $sum: 1 } } },
+    { $sort: { numPersons: -1 } }
+]);
+
+```
+
+### 8.4 working with arrays
+Now let's do some stuff on "friends.json" data set. The first requirement is we want to get a summary which shows each age as a group and the names for that age
+
+```js
+db.friends.aggregate([{$group: {_id: {age: "$age"}, names: {$push: "$name"}}}]
+```
+This is simple, now what if we want to get all the hobbies contained for each age?
+If we use the previous aggregation steps, it won't work, because it will simply add the array to the array.
+
+Here we use the `$unwind` operator, this operator break the array field into multiple documents, example:
+
+```js
+// persons
+[
+  {name: "Foo", hobbies: ["play", "eat"]},
+  {name: "Bar", hobbies: ["drink", "smoke"]}
+]
+
+db.persons.aggregate([
+  {$unwind: "$hobbies"}
+])
+
+// result
+[
+  {name: "Foo", hobbies: "play"},
+  {name: "Foo", hobbies: "eat"},
+  {name: "Bar", hobbies: "drink"},
+  {name: "Bar", hobbies: "smoke"}
+]
+```
+
+Now let's solve our problem:
+```js
+db.friends.aggregate([
+  { $unwind: "$hobbies" },
+  {
+    $group: {
+      _id: { age: "$age" },
+      allHobbies: {
+        $push: "$hobbies"
+      }
+    }
+  }
+]);
+```
+We firstly break the documents down according toe the hobbies array, then we group these documents back by age. But there is a problem, the "Cooking" appeared twice.
+
+To eliminate the duplicated values, we can use `$addToSet` rather than `$push`
+
+Now if we want to get only the first score for the exams, we can use the `$slice` operator in the projection.
+
+```js
+// get back the first score
+db.friends.aggregate([
+  {$project: { _id: 0, scores: {$slice: ["$examScores", 1]}}}
+])
+
+// get back the last score
+db.friends.aggregate([
+  {$project: { _id: 0, scores: {$slice: ["$examScores", -1]}}}
+])
+
+// get back the last two scores
+db.friends.aggregate([
+  {$project: { _id: 0, scores: {$slice: ["$examScores", 1, 2]}}}
+])
+```
+
+Also, if we only interested in how many exams a friend take, we can use this
+```js
+db.friends.aggregate([
+  { $project: {_id: 0, numOfExams: {$size: "$examScores"}}}
+])
+```
+
+This time, we only care about the exams which got a score more than 60, here we can use `$filter`, it works similar like the `filter` method in javascript
+```js
+db.friends.aggregate([
+  {
+    $project: {
+      _id: 0,
+      name: 1,
+      goodScores: { $filter: {
+        input: "$examScores", // 1
+        as: "s", // 2
+                    // 4
+        cond: { $gt: ["$$s.score", 60]} // 3
+      }}
+    }
+  }
+])
+```
+- 1. the field name we want to filter
+- 2. the temp variable we want to call
+- 3. the condition
+- 4. if we want to reference our temp variable, we need to use `$$`
+
+If we want to fetch each student with the highes score, and sort the documents by scores in desending order, we can do this:
+```js
+db.friends.aggregate([
+  {$unwind: "$examScores"},
+  {$sort: {"examScores": -1}},
+  {$project: {
+    name: 1,
+    age: 1,
+    myScore: "$examScores.score"
+  }},
+  {$group: {
+    _id: "$_id",
+    name: {$first: "$name"},
+    age: {$first: "$age"},
+    highestScore: { $max: "$myScore"}
+  }},
+  {$sort: {"highestScore": -1}}
+])
+```
